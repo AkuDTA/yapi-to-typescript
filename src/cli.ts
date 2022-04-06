@@ -181,11 +181,9 @@ export async function run(
 
       await generator.write(output)
       consola.success('写入文件完毕')
-      await generator.destroy()
       await config!.hooks?.success?.()
     } catch (err) {
       spinner?.stop()
-      await generator?.destroy()
       await config?.hooks?.fail?.()
       /* istanbul ignore next */
       consola.error(err)

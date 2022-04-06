@@ -4,19 +4,9 @@ import fs from 'fs-extra'
 import got from 'got'
 import path from 'path'
 import prettier from 'prettier'
-import {
-  castArray,
-  cloneDeepFast,
-  dedent,
-  groupBy,
-  isEmpty,
-  isFunction,
-  last,
-  memoize,
-  noop,
-  uniq,
-  values,
-} from 'vtils'
+import { castArray } from '../util'
+import { cmd } from './tsc'
+
 import {
   CategoryList,
   CommentConfig,
@@ -31,8 +21,20 @@ import {
   RequestBodyType,
   ServerConfig,
   SyntheticalConfig,
-} from './types'
-import { exec } from 'child_process'
+} from '../types'
+import {
+  cloneDeepFast,
+  dedent,
+  groupBy,
+  isEmpty,
+  isFunction,
+  last,
+  memoize,
+  noop,
+  uniq,
+  values,
+} from 'vtils'
+
 import {
   getCachedPrettierOptions,
   getNormalizedRelativePath,
@@ -41,7 +43,7 @@ import {
   jsonSchemaToType,
   sortByWeights,
   throwError,
-} from './utils'
+} from '../utils'
 
 interface OutputFileList {
   [outputFilePath: string]: {
@@ -51,14 +53,15 @@ interface OutputFileList {
   }
 }
 
+export interface GeneratorOptions {
+  cwd: string
+}
+
 export class Generator {
   /** 配置 */
   private config: ServerConfig[] = []
 
-  constructor(
-    config: Config,
-    private options: { cwd: string } = { cwd: process.cwd() },
-  ) {
+  constructor(config: Config, private options: GeneratorOptions) {
     // config 可能是对象或数组，统一为数组
     this.config = castArray(config)
   }
@@ -281,7 +284,6 @@ export class Generator {
           // eslint-disable-next-line prefer-const
           content,
           requestFunctionFilePath,
-          requestHookMakerFilePath,
           // eslint-disable-next-line prefer-const
           syntheticalConfig,
         } = outputFileList[outputFilePath]
@@ -291,10 +293,6 @@ export class Generator {
         // 支持 .jsx? 后缀
         outputFilePath = outputFilePath.replace(/\.js(x)?$/, '.ts$1')
         requestFunctionFilePath = requestFunctionFilePath.replace(
-          /\.js(x)?$/,
-          '.ts$1',
-        )
-        requestHookMakerFilePath = requestHookMakerFilePath.replace(
           /\.js(x)?$/,
           '.ts$1',
         )
@@ -373,20 +371,6 @@ export class Generator {
                     requestFunctionFilePath,
                   ),
                 )}
-                ${
-                  !syntheticalConfig.reactHooks ||
-                  !syntheticalConfig.reactHooks.enabled
-                    ? ''
-                    : dedent`
-                      // @ts-ignore
-                      import makeRequestHook from ${JSON.stringify(
-                        getNormalizedRelativePath(
-                          outputFilePath,
-                          requestHookMakerFilePath,
-                        ),
-                      )}
-                    `
-                }
 
                 type UserRequestRestArgs = RequestFunctionRestArgs<typeof request>
 
@@ -422,33 +406,17 @@ export class Generator {
           await this.tsc(outputFilePath)
           await Promise.all([
             fs.remove(requestFunctionFilePath).catch(noop),
-            fs.remove(requestHookMakerFilePath).catch(noop),
             fs.remove(outputFilePath).catch(noop),
           ])
         }
       }),
     )
   }
-
-  async tsc(file: string) {
-    return new Promise<void>(resolve => {
-      // add this to fix bug that not-generator-file-on-window
-      const command = `${
-        require('os').platform() === 'win32' ? 'node ' : ''
-      }${JSON.stringify(require.resolve(`typescript/bin/tsc`))}`
-
-      exec(
-        `${command} --target ES2019 --module ESNext --jsx preserve --declaration --esModuleInterop ${JSON.stringify(
-          file,
-        )}`,
-        {
-          cwd: this.options.cwd,
-          env: process.env,
-        },
-        () => resolve(),
-      )
+  // 使用 tsc 将 typescript 编译为 JavaScript
+  tsc = async (file: string) =>
+    new Promise(resolve => {
+      cmd({ cwd: this.options.cwd, file }, resolve)
     })
-  }
 
   async fetchApi<T = any>(url: string, query: Record<string, any>): Promise<T> {
     const { body: res } = await got.get<{
@@ -545,7 +513,7 @@ export class Generator {
   async fetchProjectInfo(syntheticalConfig: SyntheticalConfig) {
     const projectInfo = await this.fetchProject(syntheticalConfig)
     const projectCats = await this.fetchApi<CategoryList>(
-      `${syntheticalConfig.serverUrl}/api/interface/getCatMenu`,
+      `${syntheticalConfig.serverUrl}`,
       {
         token: syntheticalConfig.token!,
         project_id: projectInfo._id,

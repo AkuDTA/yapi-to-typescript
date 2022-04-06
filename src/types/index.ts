@@ -297,9 +297,6 @@ export interface Category {
 /** 分类列表，对应数据导出的 json 内容 */
 export type CategoryList = Category[]
 
-/** 分类列表，对应数据导出的 json 内容 */
-export type CategoryListWithInterface = Category & { list: InterfaceList }[]
-
 /** 项目信息 */
 export interface Project {
   /** ID */
@@ -601,7 +598,7 @@ export interface ProjectConfig extends SharedConfig {
    *
    * @example 'e02a47122259d0c1973a9ff81cabb30685d64abc72f39edaa1ac6b6a792a647d'
    */
-  token: string
+  token: string | string[]
 
   /**
    * 分类列表。
