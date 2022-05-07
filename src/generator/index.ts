@@ -1,10 +1,15 @@
 import * as changeCase from 'change-case'
 import dayjs from 'dayjs'
-import fs from 'fs-extra'
 import got from 'got'
 import path from 'path'
-import prettier from 'prettier'
-import { castArray } from '../util'
+import {
+  castArray,
+  groupBy,
+  isEmpty,
+  isFunction,
+  last,
+  throwError,
+} from '../util'
 import { cmd } from './tsc'
 
 import {
@@ -22,27 +27,14 @@ import {
   ServerConfig,
   SyntheticalConfig,
 } from '../types'
-import {
-  cloneDeepFast,
-  dedent,
-  groupBy,
-  isEmpty,
-  isFunction,
-  last,
-  memoize,
-  noop,
-  uniq,
-  values,
-} from 'vtils'
+
+import { cloneDeepFast, dedent, memoize, uniq } from 'vtils'
 
 import {
-  getCachedPrettierOptions,
-  getNormalizedRelativePath,
   getRequestDataJsonSchema,
   getResponseDataJsonSchema,
   jsonSchemaToType,
   sortByWeights,
-  throwError,
 } from '../utils'
 
 interface OutputFileList {
@@ -58,8 +50,11 @@ export interface GeneratorOptions {
 }
 
 export class Generator {
-  /** 配置 */
+  /**
+   * 配置
+   * */
   private config: ServerConfig[] = []
+  /** */
 
   constructor(config: Config, private options: GeneratorOptions) {
     // config 可能是对象或数组，统一为数组
@@ -68,7 +63,6 @@ export class Generator {
 
   async prepare(): Promise<void> {
     this.config = await Promise.all(
-      // config 可能是对象或数组，统一为数组
       this.config.map(async item => {
         if (item.serverUrl) {
           item.serverUrl = item.serverUrl.replace(/\/+$/, '')
@@ -258,13 +252,12 @@ export class Generator {
                     )
                   ).flat()
 
-                  for (const groupedCodes of values(
-                    groupBy(codes, item => item.outputFilePath),
-                  )) {
-                    sortByWeights(groupedCodes)
-                    outputFileList[groupedCodes[0].outputFilePath].content.push(
-                      ...groupedCodes.map(item => item.code),
-                    )
+                  const groups = groupBy(codes, item => item.outputFilePath)
+                  for (const group in groups) {
+                    sortByWeights(groups[group])
+                    outputFileList[
+                      groups[group][0].outputFilePath
+                    ].content.push(...groups[group].map(item => item.code))
                   }
                 },
               ),
@@ -275,142 +268,6 @@ export class Generator {
     )
 
     return outputFileList
-  }
-
-  async write(outputFileList: OutputFileList) {
-    return Promise.all(
-      Object.keys(outputFileList).map(async outputFilePath => {
-        let {
-          // eslint-disable-next-line prefer-const
-          content,
-          requestFunctionFilePath,
-          // eslint-disable-next-line prefer-const
-          syntheticalConfig,
-        } = outputFileList[outputFilePath]
-
-        const rawRequestFunctionFilePath = requestFunctionFilePath
-
-        // 支持 .jsx? 后缀
-        outputFilePath = outputFilePath.replace(/\.js(x)?$/, '.ts$1')
-        requestFunctionFilePath = requestFunctionFilePath.replace(
-          /\.js(x)?$/,
-          '.ts$1',
-        )
-
-        if (!syntheticalConfig.typesOnly) {
-          if (!(await fs.pathExists(rawRequestFunctionFilePath))) {
-            await fs.outputFile(
-              requestFunctionFilePath,
-              dedent`
-                import type { RequestFunctionParams } from 'yapi-to-typescript'
-
-                export interface RequestOptions {
-                  /**
-                   * 使用的服务器。
-                   *
-                   * - \`prod\`: 生产服务器
-                   * - \`dev\`: 测试服务器
-                   * - \`mock\`: 模拟服务器
-                   *
-                   * @default prod
-                   */
-                  server?: 'prod' | 'dev' | 'mock',
-                }
-
-                export default function request<TResponseData>(
-                  payload: RequestFunctionParams,
-                  options: RequestOptions = {
-                    server: 'prod',
-                  },
-                ): Promise<TResponseData> {
-                  return new Promise<TResponseData>((resolve, reject) => {
-                    // 基本地址
-                    const baseUrl = options.server === 'mock'
-                      ? payload.mockUrl
-                      : options.server === 'dev'
-                        ? payload.devUrl
-                        : payload.prodUrl
-
-                    // 请求地址
-                    const url = \`\${baseUrl}\${payload.path}\`
-
-                    // 具体请求逻辑
-                  })
-                }
-              `,
-            )
-          }
-        }
-
-        // 始终写入主文件
-        const rawOutputContent = dedent`
-          /* tslint:disable */
-          /* eslint-disable */
-
-          /* 该文件由 yapi-to-typescript 自动生成，请勿直接修改！！！ */
-
-          ${
-            syntheticalConfig.typesOnly
-              ? dedent`
-                // @ts-ignore
-                type FileData = File
-
-                ${content.join('\n\n').trim()}
-              `
-              : dedent`
-                // @ts-ignore
-                // prettier-ignore
-                import { QueryStringArrayFormat, Method, RequestBodyType, ResponseBodyType, FileData, prepare } from 'yapi-to-typescript'
-                // @ts-ignore
-                // prettier-ignore
-                import type { RequestConfig, RequestFunctionRestArgs } from 'yapi-to-typescript'
-                // @ts-ignore
-                import request from ${JSON.stringify(
-                  getNormalizedRelativePath(
-                    outputFilePath,
-                    requestFunctionFilePath,
-                  ),
-                )}
-
-                type UserRequestRestArgs = RequestFunctionRestArgs<typeof request>
-
-                // Request: 目前 React Hooks 功能有用到
-                export type Request<TRequestData, TRequestConfig extends RequestConfig, TRequestResult> = (
-                  TRequestConfig['requestDataOptional'] extends true
-                    ? (requestData?: TRequestData, ...args: RequestFunctionRestArgs<typeof request>) => TRequestResult
-                    : (requestData: TRequestData, ...args: RequestFunctionRestArgs<typeof request>) => TRequestResult
-                ) & {
-                  requestConfig: TRequestConfig
-                }
-
-                ${content.join('\n\n').trim()}
-              `
-          }
-        `
-        // ref: https://prettier.io/docs/en/options.html
-        const prettyOutputContent = prettier.format(rawOutputContent, {
-          ...(await getCachedPrettierOptions()),
-          filepath: outputFilePath,
-        })
-        const outputContent = `${dedent`
-          /* prettier-ignore-start */
-          ${prettyOutputContent}
-          /* prettier-ignore-end */
-        `}\n`
-        await fs.outputFile(outputFilePath, outputContent)
-
-        // 如果要生成 JavaScript 代码，
-        // 则先对主文件进行 tsc 编译，主文件引用到的其他文件也会被编译，
-        // 然后，删除原始的 .tsx? 文件。
-        if (syntheticalConfig.target === 'javascript') {
-          await this.tsc(outputFilePath)
-          await Promise.all([
-            fs.remove(requestFunctionFilePath).catch(noop),
-            fs.remove(outputFilePath).catch(noop),
-          ])
-        }
-      }),
-    )
   }
   // 使用 tsc 将 typescript 编译为 JavaScript
   tsc = async (file: string) =>
